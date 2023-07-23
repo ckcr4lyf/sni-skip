@@ -1,11 +1,31 @@
-pub fn strip_sni(packet: &[u8]) {
+use etherparse::SlicedPacket;
 
+pub fn strip_sni(packet: &[u8]) {
+    let ethernet_packet: SlicedPacket = match SlicedPacket::from_ethernet(packet) {
+        Err(e) => {
+            println!("failed to parse packet {}", e);
+            return;
+        },
+        Ok(p) => p,
+    };
+
+    /// TODO: Read upto extenion length field
+    /// store the u16 in total_ext_len
+    /// loop over extensions
+    /// read ext_type(u16) and ext_len(u16)
+    /// if ext_type==0x00 (SNI), skip it, and subtract (4 + value of ext_len) from total_ext_len
+    /// we won't copy these bytes into final packet
+    /// essentially we strip it from the packet
+    /// 
+    /// return resulting packet without SNI data
+
+    println!("DATA IS {:02x?}", ethernet_packet.payload);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn is_legit() {
         // A TLS Client Hello Manually Captured at Ethernet Frame
