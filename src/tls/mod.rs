@@ -1,6 +1,7 @@
 use etherparse::SlicedPacket;
+use log::{info};
 
-pub fn strip_sni(packet: &[u8]) {
+pub fn strip_sni(packet: &[u8]) -> Option<()> {
     let ethernet_packet: SlicedPacket = match SlicedPacket::from_ethernet(packet) {
         Err(e) => {
             println!("failed to parse packet {}", e);
@@ -8,6 +9,45 @@ pub fn strip_sni(packet: &[u8]) {
         },
         Ok(p) => p,
     };
+
+    let payload_len = ethernet_packet.payload.len();
+    let new_packet: Vec<u8> = Vec::with_capacity(payload_len);
+
+    env_logger::init();
+    info!("Payload len is {}", payload_len);
+
+    let mut pos = 0;
+
+    // Fantastic reference: https://tls12.xargs.org/#client-hello
+
+    // 5 + 4 + 2 + 32 + 1 = 43 bytes of data we can always skip.
+    pos += 43;
+
+    // next byte is length of existing session (if any)
+    let session_length = u8::from_be_bytes(ethernet_packet.payload.get(pos .. pos + 1)?.try_into().expect("Fucked up"));
+    pos += 1;
+    // println!("session length is {:?}, data is {:x?}", session_length, &ethernet_packet.payload[pos .. pos + session_length as usize]);
+    pos += session_length as usize;
+
+    // next two bytes give use length of Cipher Suite data
+    let cs_length = u16::from_be_bytes(ethernet_packet.payload.get(pos .. pos + 2)?.try_into().expect("Fucked up"));
+    pos += 2;
+    // println!("Cipher Suite length is {:?}, data is {:x?}", cs_length, &ethernet_packet.payload[pos .. pos + cs_length as usize]);
+    pos += cs_length as usize;
+
+    // next byte is length of compression data
+    let cd_length = u8::from_be_bytes(ethernet_packet.payload.get(pos .. pos + 1)?.try_into().expect("Fucked up"));
+    pos += 1;
+    // println!("compression data length is {:?}, data is {:x?}", cd_length, &ethernet_packet.payload[pos .. pos + cd_length as usize]);
+    pos += cd_length as usize;
+
+    // next two bytes are length of extensions
+    let extension_length = u16::from_be_bytes(ethernet_packet.payload.get(pos .. pos + 2)?.try_into().expect("Fucked up"));
+    pos += 2;
+    // println!("extension length is {:?}, data is {:x?}", extension_length, &ethernet_packet.payload[pos .. pos + extension_length as usize]);
+    // println!("extension length is {:?}", extension_length);
+
+    let mut ext_pos: usize = 0;
 
     /// TODO: Read upto extenion length field
     /// store the u16 in total_ext_len
@@ -20,6 +60,8 @@ pub fn strip_sni(packet: &[u8]) {
     /// return resulting packet without SNI data
 
     println!("DATA IS {:02x?}", ethernet_packet.payload);
+
+    Some(())
 }
 
 #[cfg(test)]
