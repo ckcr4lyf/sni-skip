@@ -1,5 +1,5 @@
 use etherparse::SlicedPacket;
-use log::{info};
+use log::{info, debug};
 
 pub fn strip_sni(packet: &[u8]) -> Option<()> {
     let ethernet_packet: SlicedPacket = match SlicedPacket::from_ethernet(packet) {
@@ -13,10 +13,16 @@ pub fn strip_sni(packet: &[u8]) -> Option<()> {
     let payload_len = ethernet_packet.payload.len();
     // let a = ethernet_packet.transport.unwrap();
     // a
-    let new_packet: Vec<u8> = Vec::with_capacity(payload_len);
+    let mut new_packet: Vec<u8> = Vec::with_capacity(payload_len);
 
     env_logger::init();
     info!("Payload len is {}", payload_len);
+
+    // let ip_header = match ethernet_packet.ip.unwrap() {
+    //     etherparse::InternetSlice::Ipv4(header, _) => {
+    //         header.l
+    //     }
+    // }
 
     let mut pos = 0;
 
@@ -43,23 +49,63 @@ pub fn strip_sni(packet: &[u8]) -> Option<()> {
     // println!("compression data length is {:?}, data is {:x?}", cd_length, &ethernet_packet.payload[pos .. pos + cd_length as usize]);
     pos += cd_length as usize;
 
+    // Up until here, we need to copy EVERYTHING
+    new_packet.extend_from_slice(&ethernet_packet.payload[0..pos]);
+
     // next two bytes are length of extensions
     let extension_length = u16::from_be_bytes(ethernet_packet.payload.get(pos .. pos + 2)?.try_into().expect("Fucked up"));
     pos += 2;
     // println!("extension length is {:?}, data is {:x?}", extension_length, &ethernet_packet.payload[pos .. pos + extension_length as usize]);
     // println!("extension length is {:?}", extension_length);
+    debug!("Extensions length is {}", extension_length);
 
+    let mut extension_data: Vec<u8> = Vec::with_capacity(extension_length as usize);
+
+    // TODO: Read upto extenion length field
+    // store the u16 in total_ext_len
+    // loop over extensions
+    // read ext_type(u16) and ext_len(u16)
+    // if ext_type==0x00 (SNI), skip it, and subtract (4 + value of ext_len) from total_ext_len
+    // we won't copy these bytes into final packet
+    // essentially we strip it from the packet
+    // 
+    // return resulting packet without SNI data
+    
     let mut ext_pos: usize = 0;
+    let mut skipped_bytes = 0;
 
-    /// TODO: Read upto extenion length field
-    /// store the u16 in total_ext_len
-    /// loop over extensions
-    /// read ext_type(u16) and ext_len(u16)
-    /// if ext_type==0x00 (SNI), skip it, and subtract (4 + value of ext_len) from total_ext_len
-    /// we won't copy these bytes into final packet
-    /// essentially we strip it from the packet
-    /// 
-    /// return resulting packet without SNI data
+    while ext_pos < extension_length as usize {
+        let ext_type = u16::from_be_bytes(ethernet_packet.payload.get(pos + ext_pos .. pos + ext_pos + 2)?.try_into().expect("Fucked up"));
+        ext_pos += 2;
+        let ext_length = u16::from_be_bytes(ethernet_packet.payload.get(pos + ext_pos .. pos + ext_pos + 2)?.try_into().expect("Fucked up"));
+        ext_pos += 2;
+        debug!("Found extension, type=0x{:04X?} & length=0x{:04X?}", ext_type, ext_length);
+
+        if ext_type != 0x00 {
+            debug!("Non SNI extension, we will add this guy...");
+            extension_data.extend_from_slice(&u16::to_be_bytes(ext_type));
+            extension_data.extend_from_slice(&u16::to_be_bytes(ext_length));
+            extension_data.extend_from_slice(&ethernet_packet.payload[pos + ext_pos .. pos + ext_pos + ext_length as usize]);
+        } else {
+            info!("Found SNI extension! We should skip the next 0x{:04X?} bytes!", ext_length);
+            // We would want to skip the next ext_length bytes
+            // But also, not copy the 4 bytes of extension type , extension length
+            skipped_bytes += 4 + ext_length;
+        }
+
+        ext_pos += ext_length as usize;
+    }
+
+    info!("We are gonna cut 0x{:04X} bytes.", skipped_bytes);
+
+    // New extension length
+    let new_extension_length = extension_length - skipped_bytes;
+    info!("New extension length is {}", new_extension_length);
+    new_packet.extend_from_slice(&u16::to_be_bytes(new_extension_length));
+    new_packet.extend_from_slice(&extension_data);
+
+    info!("New packet len is {}", new_packet.len());
+
 
     println!("DATA IS {:02x?}", ethernet_packet.payload);
 
