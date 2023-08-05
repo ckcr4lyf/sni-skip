@@ -5,12 +5,14 @@ pub fn strip_sni(packet: &[u8]) -> Option<()> {
     let ethernet_packet: SlicedPacket = match SlicedPacket::from_ethernet(packet) {
         Err(e) => {
             println!("failed to parse packet {}", e);
-            return;
+            return None;
         },
         Ok(p) => p,
     };
 
     let payload_len = ethernet_packet.payload.len();
+    // let a = ethernet_packet.transport.unwrap();
+    // a
     let new_packet: Vec<u8> = Vec::with_capacity(payload_len);
 
     env_logger::init();
