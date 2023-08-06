@@ -18,12 +18,14 @@ pub fn strip_sni(packet: &[u8]) -> Option<()> {
     env_logger::init();
     info!("Payload len is {}", payload_len);
 
-    // let ip_header = match ethernet_packet.ip.unwrap() {
-    //     etherparse::InternetSlice::Ipv4(header, _) => {
-    //         header.l
-    //     }
-    // }
+    let ip_header = match ethernet_packet.ip.unwrap() {
+        etherparse::InternetSlice::Ipv4(header, _) => {
+            header
+        },
+        // _ => None
+    };
 
+    ip_header.
     let mut pos = 0;
 
     // Fantastic reference: https://tls12.xargs.org/#client-hello
