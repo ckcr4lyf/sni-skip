@@ -1,5 +1,6 @@
 use etherparse::SlicedPacket;
-use log::{info, debug};
+use log::{info, debug, error, trace};
+use pnet::packet::{Packet, MutablePacket};
 
 pub fn strip_sni(packet: &[u8]) -> Option<()> {
     let ethernet_packet: SlicedPacket = match SlicedPacket::from_ethernet(packet) {
@@ -11,21 +12,31 @@ pub fn strip_sni(packet: &[u8]) -> Option<()> {
     };
 
     let payload_len = ethernet_packet.payload.len();
+    let x = ethernet_packet.transport.unwrap();
+    let tlen = match x {
+        etherparse::TransportSlice::Tcp(t) => t.slice().len(),
+        _ => 0,
+    };
     // let a = ethernet_packet.transport.unwrap();
     // a
-    let mut new_packet: Vec<u8> = Vec::with_capacity(payload_len);
+    let mut new_packet: Vec<u8> = Vec::with_capacity(tlen + payload_len);
+    new_packet.extend_from_slice(&packet[14..14 + tlen]);
 
     env_logger::init();
+    info!("Original packet len is {}", packet.len());
+    info!("Header len is {}", tlen);
     info!("Payload len is {}", payload_len);
 
-    let ip_header = match ethernet_packet.ip.unwrap() {
-        etherparse::InternetSlice::Ipv4(header, _) => {
-            header
-        },
-        // _ => None
-    };
+    // TODO: Handle case where it's a pure IP packet (so offset doesn't make sense)
 
-    ip_header.
+    // let ip_header = match ethernet_packet.ip.unwrap() {
+    //     etherparse::InternetSlice::Ipv4(header, _) => {
+    //         header.slice()
+    //     },
+    //     // _ => None
+    // };
+
+    // ip_header.
     let mut pos = 0;
 
     // Fantastic reference: https://tls12.xargs.org/#client-hello
@@ -63,11 +74,10 @@ pub fn strip_sni(packet: &[u8]) -> Option<()> {
 
     let mut extension_data: Vec<u8> = Vec::with_capacity(extension_length as usize);
 
-    // TODO: Read upto extenion length field
-    // store the u16 in total_ext_len
+    // TODO: 
     // loop over extensions
     // read ext_type(u16) and ext_len(u16)
-    // if ext_type==0x00 (SNI), skip it, and subtract (4 + value of ext_len) from total_ext_len
+    // if ext_type==0x00 (SNI), skip it, and add (4 + value of ext_len) to skipped_bytes
     // we won't copy these bytes into final packet
     // essentially we strip it from the packet
     // 
@@ -98,18 +108,40 @@ pub fn strip_sni(packet: &[u8]) -> Option<()> {
         ext_pos += ext_length as usize;
     }
 
+    debug!("Current pos+ext_pos is {}", pos + ext_pos);
     info!("We are gonna cut 0x{:04X} bytes.", skipped_bytes);
 
     // New extension length
     let new_extension_length = extension_length - skipped_bytes;
-    info!("New extension length is {}", new_extension_length);
+    info!("New extension length is 0x{:04X}", new_extension_length);
     new_packet.extend_from_slice(&u16::to_be_bytes(new_extension_length));
     new_packet.extend_from_slice(&extension_data);
 
+    info!("Old packet len is {}", ethernet_packet.payload.len());
     info!("New packet len is {}", new_packet.len());
 
 
-    println!("DATA IS {:02x?}", ethernet_packet.payload);
+    trace!("OLD packet is {:02x?}", ethernet_packet.payload);
+    trace!("NEW packet is {:02x?}", new_packet);
+
+    if let Some(mut p) = pnet::packet::ipv4::MutableIpv4Packet::new(&mut Vec::from(&packet[14..])) {
+        debug!("Made the packet as {:?}", p);
+        debug!("old checksum 0x{:04X?}", p.get_checksum());
+        // p.payload().s
+        // p.se
+
+        // let tcp_packet = pnet::packet::tcp::MutableTcpPacket::new(p.payload_mut()).expect("fucc");
+        // tcp_packet.set_pa
+        p.set_payload(&new_packet);
+        p.set_total_length(p.get_header_length() as u16 * 4 + new_packet.len() as u16);
+        let nsum = pnet::packet::ipv4::checksum(&p.to_immutable());
+        p.set_checksum(nsum);
+        debug!("checksum is now 0x{:04X?}", nsum);
+        debug!("Now packet is {:?}", p);
+
+    } else {
+        error!("Failed to make packet...");
+    }
 
     Some(())
 }
