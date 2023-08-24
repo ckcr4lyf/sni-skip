@@ -2,7 +2,7 @@ use etherparse::SlicedPacket;
 use log::{info, debug, error, trace};
 use pnet::packet::{Packet, MutablePacket};
 
-pub fn strip_sni(packet: &[u8]) -> Option<()> {
+pub fn strip_sni(packet: &[u8]) -> Option<Vec<u8>> {
     let ethernet_packet: SlicedPacket = match SlicedPacket::from_ethernet(packet) {
         Err(e) => {
             println!("failed to parse packet {}", e);
@@ -12,14 +12,18 @@ pub fn strip_sni(packet: &[u8]) -> Option<()> {
     };
 
     let payload_len = ethernet_packet.payload.len();
+
+    // Hacky way to extract tcp header length
     let x = ethernet_packet.transport.unwrap();
     let tlen = match x {
         etherparse::TransportSlice::Tcp(t) => t.slice().len(),
         _ => 0,
     };
-    // let a = ethernet_packet.transport.unwrap();
-    // a
+
     let mut new_packet: Vec<u8> = Vec::with_capacity(tlen + payload_len);
+
+    // and then manually copy the tcp header into it
+    // TODO: We probably need to fix the checksum since we will manioulate the payload...
     new_packet.extend_from_slice(&packet[14..14 + tlen]);
 
     env_logger::init();
@@ -74,7 +78,6 @@ pub fn strip_sni(packet: &[u8]) -> Option<()> {
 
     let mut extension_data: Vec<u8> = Vec::with_capacity(extension_length as usize);
 
-    // TODO: 
     // loop over extensions
     // read ext_type(u16) and ext_len(u16)
     // if ext_type==0x00 (SNI), skip it, and add (4 + value of ext_len) to skipped_bytes
@@ -143,7 +146,7 @@ pub fn strip_sni(packet: &[u8]) -> Option<()> {
         error!("Failed to make packet...");
     }
 
-    Some(())
+    Some(new_packet)
 }
 
 #[cfg(test)]
