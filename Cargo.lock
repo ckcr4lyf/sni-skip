@@ -141,6 +141,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
 
 [[package]]
+name = "nfqueue"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8684696e66ae4f74e6b2fe8868bf317bc4cd0e0e53aabddf7c40dad930111bca"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "no-std-net"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -319,7 +328,9 @@ version = "0.1.0"
 dependencies = [
  "env_logger",
  "etherparse",
+ "libc",
  "log",
+ "nfqueue",
  "nom",
  "pnet",
 ]

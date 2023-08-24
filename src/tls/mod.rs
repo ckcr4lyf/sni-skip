@@ -12,12 +12,21 @@ pub fn strip_sni(packet: &[u8]) -> Option<Vec<u8>> {
     };
 
     let payload_len = ethernet_packet.payload.len();
+    info!("Original packet len is {}", packet.len());
 
     // Hacky way to extract tcp header length
-    let x = ethernet_packet.transport.unwrap();
-    let tlen = match x {
-        etherparse::TransportSlice::Tcp(t) => t.slice().len(),
-        _ => 0,
+    let tlen = match ethernet_packet.transport {
+        Some(tp) => match tp {
+            etherparse::TransportSlice::Tcp(t) => t.slice().len(),
+            _ => {
+                debug!("Not TCP, returning None...");
+                return None;
+            }
+        },
+        None => {
+            debug!("No transport, returning None. Packet: {:?}", ethernet_packet);
+            return None;
+        }
     };
 
     let mut new_packet: Vec<u8> = Vec::with_capacity(tlen + payload_len);
@@ -27,7 +36,6 @@ pub fn strip_sni(packet: &[u8]) -> Option<Vec<u8>> {
     new_packet.extend_from_slice(&packet[14..14 + tlen]);
 
     env_logger::init();
-    info!("Original packet len is {}", packet.len());
     info!("Header len is {}", tlen);
     info!("Payload len is {}", payload_len);
 
