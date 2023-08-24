@@ -21,7 +21,7 @@ fn queue_callback(msg: &nfqueue::Message, state: &mut State) {
             info!("Stripped sni, will send new packet :hapbruh:");
             // msg.set_verdict_full(nfqueue::Verdict::Accept, msg.get_id(), &np);
             // TODO: Fix to only make an IP packet, not whole ethernet packet.
-            msg.set_verdict_full(nfqueue::Verdict::Accept, msg.get_nfmark(), &hack_packet);
+            msg.set_verdict_full(nfqueue::Verdict::Accept, msg.get_nfmark(), &np);
         },
         None => {
             info!("Did not strip sni, will accept as is.");

@@ -3,8 +3,9 @@ use log::{info, debug, error, trace};
 use pnet::packet::{Packet, MutablePacket};
 
 pub fn strip_sni(packet: &[u8]) -> Option<Vec<u8>> {
-    // env_logger::init();
-    debug!("Original packet 0x{:?}", packet);
+    trace!("Original packet {:?}", packet);
+
+    // TODO: Fix var name to ip_packet.
     let ethernet_packet: SlicedPacket = match SlicedPacket::from_ip(packet) {
         Err(e) => {
             error!("failed to parse packet {}", e);
@@ -15,10 +16,10 @@ pub fn strip_sni(packet: &[u8]) -> Option<Vec<u8>> {
     // debug!("Parsed packet is {:?}", ethernet_packet);
 
     let payload_len = ethernet_packet.payload.len();
-    info!("Original packet len is {}", packet.len());
+    debug!("Original packet len is {}", packet.len());
 
     // Hacky way to extract tcp header length
-    let tlen = match ethernet_packet.transport {
+    let tcp_header_len = match ethernet_packet.transport {
         Some(tp) => match tp {
             etherparse::TransportSlice::Tcp(t) => t.slice().len(),
             _ => {
@@ -32,32 +33,18 @@ pub fn strip_sni(packet: &[u8]) -> Option<Vec<u8>> {
         }
     };
 
-    let mut new_packet: Vec<u8> = Vec::with_capacity(tlen + payload_len);
+    debug!("TCP Header len is {}", tcp_header_len);
+    debug!("TCP Payload len is {}", payload_len);
 
-    // and then manually copy the tcp header into it
-    // TODO: We probably need to fix the checksum since we will manioulate the payload...
-    // TODO: No offset, there is no ethernet header xDDDD
-    new_packet.extend_from_slice(&packet[14..14 + tlen]);
-
-    info!("Header len is {}", tlen);
-    info!("Payload len is {}", payload_len);
-
-    // TODO: Handle case where it's a pure IP packet (so offset doesn't make sense)
-
-    // let ip_header = match ethernet_packet.ip.unwrap() {
-    //     etherparse::InternetSlice::Ipv4(header, _) => {
-    //         header.slice()
-    //     },
-    //     // _ => None
-    // };
-
-    // ip_header.
-    let mut pos = 0;
-
+    // Only needs TCP header and TCP payload
+    let mut new_tcp_data: Vec<u8> = Vec::with_capacity(tcp_header_len + payload_len);
+    
+    // Copy the TCP header into it
+    new_tcp_data.extend_from_slice(&packet[20..20+tcp_header_len]);
+    
     // Fantastic reference: https://tls12.xargs.org/#client-hello
-
     // 5 + 4 + 2 + 32 + 1 = 43 bytes of data we can always skip.
-    pos += 43;
+    let mut pos = 43;
 
     // next byte is length of existing session (if any)
     let session_length = u8::from_be_bytes(ethernet_packet.payload.get(pos .. pos + 1)?.try_into().expect("Fucked up"));
@@ -78,7 +65,7 @@ pub fn strip_sni(packet: &[u8]) -> Option<Vec<u8>> {
     pos += cd_length as usize;
 
     // Up until here, we need to copy EVERYTHING
-    new_packet.extend_from_slice(&ethernet_packet.payload[0..pos]);
+    new_tcp_data.extend_from_slice(&ethernet_packet.payload[0..pos]);
 
     // next two bytes are length of extensions
     let extension_length = u16::from_be_bytes(ethernet_packet.payload.get(pos .. pos + 2)?.try_into().expect("Fucked up"));
@@ -105,15 +92,15 @@ pub fn strip_sni(packet: &[u8]) -> Option<Vec<u8>> {
         ext_pos += 2;
         let ext_length = u16::from_be_bytes(ethernet_packet.payload.get(pos + ext_pos .. pos + ext_pos + 2)?.try_into().expect("Fucked up"));
         ext_pos += 2;
-        debug!("Found extension, type=0x{:04X?} & length=0x{:04X?}", ext_type, ext_length);
+        trace!("Found extension, type=0x{:04X?} & length=0x{:04X?}", ext_type, ext_length);
 
         if ext_type != 0x00 {
-            debug!("Non SNI extension, we will add this guy...");
+            trace!("Non SNI extension, we will add this guy...");
             extension_data.extend_from_slice(&u16::to_be_bytes(ext_type));
             extension_data.extend_from_slice(&u16::to_be_bytes(ext_length));
             extension_data.extend_from_slice(&ethernet_packet.payload[pos + ext_pos .. pos + ext_pos + ext_length as usize]);
         } else {
-            info!("Found SNI extension! We should skip the next 0x{:04X?} bytes!", ext_length);
+            debug!("Found SNI extension! We should skip the next 0x{:04X?} bytes!", ext_length);
             // We would want to skip the next ext_length bytes
             // But also, not copy the 4 bytes of extension type , extension length
             skipped_bytes += 4 + ext_length;
@@ -123,43 +110,44 @@ pub fn strip_sni(packet: &[u8]) -> Option<Vec<u8>> {
     }
 
     debug!("Current pos+ext_pos is {}", pos + ext_pos);
-    info!("We are gonna cut 0x{:04X} bytes.", skipped_bytes);
+    debug!("We are gonna cut {} bytes.", skipped_bytes);
 
     // New extension length
     let new_extension_length = extension_length - skipped_bytes;
-    info!("New extension length is 0x{:04X}", new_extension_length);
-    new_packet.extend_from_slice(&u16::to_be_bytes(new_extension_length));
-    new_packet.extend_from_slice(&extension_data);
+    debug!("New extension length is {}", new_extension_length);
+    new_tcp_data.extend_from_slice(&u16::to_be_bytes(new_extension_length));
+    new_tcp_data.extend_from_slice(&extension_data);
 
-    info!("Old packet len is {}", ethernet_packet.payload.len());
-    info!("New packet len is {}", new_packet.len());
-
+    debug!("Old TCP Payload len is {}", ethernet_packet.payload.len());
+    debug!("New TCP Payload len is {}", new_tcp_data.len() - tcp_header_len);
 
     trace!("OLD packet is {:02x?}", ethernet_packet.payload);
-    trace!("NEW packet is {:02x?}", new_packet);
+    trace!("NEW packet is {:02x?}", new_tcp_data);
 
-    if let Some(mut p) = pnet::packet::ipv4::MutableIpv4Packet::new(&mut Vec::from(&packet[14..])) {
-        debug!("Made the packet as {:?}", p);
-        debug!("old checksum 0x{:04X?}", p.get_checksum());
-        // p.payload().s
-        // p.se
-
-        // let tcp_packet = pnet::packet::tcp::MutableTcpPacket::new(p.payload_mut()).expect("fucc");
-        // tcp_packet.set_pa
-        p.set_payload(&new_packet);
-        p.set_total_length(p.get_header_length() as u16 * 4 + new_packet.len() as u16);
-        let nsum = pnet::packet::ipv4::checksum(&p.to_immutable());
-        p.set_checksum(nsum);
-        debug!("checksum is now 0x{:04X?}", nsum);
-        debug!("Now packet is {:?}", p);
-
-    } else {
-        error!("Failed to make packet...");
+    match pnet::packet::ipv4::MutableIpv4Packet::new(&mut Vec::from(packet)) {
+        Some(mut p) => {
+            debug!("Old IPv4 packet is {:?}", p);
+            debug!("old checksum 0x{:04X?}", p.get_checksum());
+            // p.payload().s
+            // p.se
+    
+            // let tcp_packet = pnet::packet::tcp::MutableTcpPacket::new(p.payload_mut()).expect("fucc");
+            // We need to make a TCP packet, and update the checksum and length
+            let mut ntcp = pnet::packet::tcp::MutableTcpPacket::new(&mut new_tcp_data).unwrap();
+            debug!("Old TCP packet is {:?}", ntcp);
+            ntcp.set_checksum(pnet::packet::tcp::ipv4_checksum(&ntcp.to_immutable(), &p.get_source(), &p.get_destination()));
+            debug!("New TCP packet is {:?}", ntcp);
+            
+            p.set_payload(ntcp.packet());
+            p.set_total_length(p.get_header_length() as u16 * 4 + new_tcp_data.len() as u16);
+            let nsum = pnet::packet::ipv4::checksum(&p.to_immutable());
+            p.set_checksum(nsum);
+            debug!("checksum is now 0x{:04X?}", nsum);
+            debug!("New IPv4 packet is {:?}", p);
+            Some(p.packet().to_vec())
+        },
+        None => None
     }
-
-    let hack_packet: [u8; 555] = [128, 128, 95, 217, 167, 10, 179, 90, 1, 187, 5, 221, 228, 112, 31, 78, 229, 232, 128, 24, 1, 246, 74, 215, 0, 0, 1, 1, 8, 10, 54, 155, 51, 57, 27, 30, 146, 131, 22, 3, 1, 2, 0, 1, 0, 1, 252, 3, 3, 210, 144, 241, 175, 140, 7, 171, 71, 75, 160, 115, 44, 24, 72, 153, 76, 68, 178, 239, 208, 184, 199, 250, 133, 167, 83, 239, 2, 39, 153, 217, 20, 32, 246, 19, 168, 200, 187, 37, 34, 90, 227, 220, 25, 78, 141, 25, 27, 76, 225, 137, 4, 114, 48, 0, 23, 78, 124, 4, 91, 243, 135, 248, 40, 178, 0, 62, 19, 2, 19, 3, 19, 1, 192, 44, 192, 48, 0, 159, 204, 169, 204, 168, 204, 170, 192, 43, 192, 47, 0, 158, 192, 36, 192, 40, 0, 107, 192, 35, 192, 39, 0, 103, 192, 10, 192, 20, 0, 57, 192, 9, 192, 19, 0, 51, 0, 157, 0, 156, 0, 61, 0, 60, 0, 53, 0, 47, 0, 255, 1, 0, 1, 117, 0, 0, 0, 25, 0, 23, 0, 0, 20, 116, 114, 97, 99, 107, 101, 114, 46, 109, 121, 119, 97, 105, 102, 117, 46, 98, 101, 115, 116, 0, 11, 0, 4, 3, 0, 1, 2, 0, 10, 0, 22, 0, 20, 0, 29, 0, 23, 0, 30, 0, 25, 0, 24, 1, 0, 1, 1, 1, 2, 1, 3, 1, 4, 0, 16, 0, 14, 0, 12, 2, 104, 50, 8, 104, 116, 116, 112, 47, 49, 46, 49, 0, 22, 0, 0, 0, 23, 0, 0, 0, 49, 0, 0, 0, 13, 0, 42, 0, 40, 4, 3, 5, 3, 6, 3, 8, 7, 8, 8, 8, 9, 8, 10, 8, 11, 8, 4, 8, 5, 8, 6, 4, 1, 5, 1, 6, 1, 3, 3, 3, 1, 3, 2, 4, 2, 5, 2, 6, 2, 0, 43, 0, 5, 4, 3, 4, 3, 3, 0, 45, 0, 2, 1, 1, 0, 51, 0, 38, 0, 36, 0, 29, 0, 32, 93, 206, 185, 162, 193, 124, 31, 168, 187, 162, 95, 101, 194, 195, 104, 22, 237, 106, 93, 178, 139, 124, 248, 167, 138, 226, 71, 73, 66, 145, 222, 101, 0, 21, 0, 173, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-
-    Some(hack_packet.to_vec())
 }
 
 #[cfg(test)]
@@ -203,7 +191,8 @@ mod tests {
 
     #[test]
     fn is_legit_tcp(){
-        let packet: [u8; 555] = [128, 128, 95, 217, 167, 10, 179, 90, 1, 187, 5, 221, 228, 112, 31, 78, 229, 232, 128, 24, 1, 246, 74, 215, 0, 0, 1, 1, 8, 10, 54, 155, 51, 57, 27, 30, 146, 131, 22, 3, 1, 2, 0, 1, 0, 1, 252, 3, 3, 210, 144, 241, 175, 140, 7, 171, 71, 75, 160, 115, 44, 24, 72, 153, 76, 68, 178, 239, 208, 184, 199, 250, 133, 167, 83, 239, 2, 39, 153, 217, 20, 32, 246, 19, 168, 200, 187, 37, 34, 90, 227, 220, 25, 78, 141, 25, 27, 76, 225, 137, 4, 114, 48, 0, 23, 78, 124, 4, 91, 243, 135, 248, 40, 178, 0, 62, 19, 2, 19, 3, 19, 1, 192, 44, 192, 48, 0, 159, 204, 169, 204, 168, 204, 170, 192, 43, 192, 47, 0, 158, 192, 36, 192, 40, 0, 107, 192, 35, 192, 39, 0, 103, 192, 10, 192, 20, 0, 57, 192, 9, 192, 19, 0, 51, 0, 157, 0, 156, 0, 61, 0, 60, 0, 53, 0, 47, 0, 255, 1, 0, 1, 117, 0, 0, 0, 25, 0, 23, 0, 0, 20, 116, 114, 97, 99, 107, 101, 114, 46, 109, 121, 119, 97, 105, 102, 117, 46, 98, 101, 115, 116, 0, 11, 0, 4, 3, 0, 1, 2, 0, 10, 0, 22, 0, 20, 0, 29, 0, 23, 0, 30, 0, 25, 0, 24, 1, 0, 1, 1, 1, 2, 1, 3, 1, 4, 0, 16, 0, 14, 0, 12, 2, 104, 50, 8, 104, 116, 116, 112, 47, 49, 46, 49, 0, 22, 0, 0, 0, 23, 0, 0, 0, 49, 0, 0, 0, 13, 0, 42, 0, 40, 4, 3, 5, 3, 6, 3, 8, 7, 8, 8, 8, 9, 8, 10, 8, 11, 8, 4, 8, 5, 8, 6, 4, 1, 5, 1, 6, 1, 3, 3, 3, 1, 3, 2, 4, 2, 5, 2, 6, 2, 0, 43, 0, 5, 4, 3, 4, 3, 3, 0, 45, 0, 2, 1, 1, 0, 51, 0, 38, 0, 36, 0, 29, 0, 32, 93, 206, 185, 162, 193, 124, 31, 168, 187, 162, 95, 101, 194, 195, 104, 22, 237, 106, 93, 178, 139, 124, 248, 167, 138, 226, 71, 73, 66, 145, 222, 101, 0, 21, 0, 173, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        env_logger::init();
+        let packet: [u8; 569] = [69, 0, 2, 57, 7, 4, 64, 0, 64, 6, 233, 174, 192, 168, 128, 128, 95, 217, 167, 10, 140, 162, 1, 187, 144, 95, 105, 208, 102, 151, 61, 245, 128, 24, 1, 246, 248, 115, 0, 0, 1, 1, 8, 10, 54, 199, 142, 231, 27, 74, 238, 47, 22, 3, 1, 2, 0, 1, 0, 1, 252, 3, 3, 27, 86, 55, 70, 223, 45, 24, 142, 164, 62, 210, 136, 60, 171, 195, 99, 251, 221, 255, 135, 131, 107, 162, 217, 192, 138, 21, 228, 100, 211, 14, 70, 32, 168, 12, 219, 19, 168, 28, 139, 101, 253, 194, 2, 99, 88, 185, 200, 166, 214, 186, 36, 190, 200, 222, 17, 155, 176, 221, 100, 12, 223, 50, 132, 190, 0, 62, 19, 2, 19, 3, 19, 1, 192, 44, 192, 48, 0, 159, 204, 169, 204, 168, 204, 170, 192, 43, 192, 47, 0, 158, 192, 36, 192, 40, 0, 107, 192, 35, 192, 39, 0, 103, 192, 10, 192, 20, 0, 57, 192, 9, 192, 19, 0, 51, 0, 157, 0, 156, 0, 61, 0, 60, 0, 53, 0, 47, 0, 255, 1, 0, 1, 117, 0, 0, 0, 25, 0, 23, 0, 0, 20, 116, 114, 97, 99, 107, 101, 114, 46, 109, 121, 119, 97, 105, 102, 117, 46, 98, 101, 115, 116, 0, 11, 0, 4, 3, 0, 1, 2, 0, 10, 0, 22, 0, 20, 0, 29, 0, 23, 0, 30, 0, 25, 0, 24, 1, 0, 1, 1, 1, 2, 1, 3, 1, 4, 0, 16, 0, 14, 0, 12, 2, 104, 50, 8, 104, 116, 116, 112, 47, 49, 46, 49, 0, 22, 0, 0, 0, 23, 0, 0, 0, 49, 0, 0, 0, 13, 0, 42, 0, 40, 4, 3, 5, 3, 6, 3, 8, 7, 8, 8, 8, 9, 8, 10, 8, 11, 8, 4, 8, 5, 8, 6, 4, 1, 5, 1, 6, 1, 3, 3, 3, 1, 3, 2, 4, 2, 5, 2, 6, 2, 0, 43, 0, 5, 4, 3, 4, 3, 3, 0, 45, 0, 2, 1, 1, 0, 51, 0, 38, 0, 36, 0, 29, 0, 32, 219, 168, 136, 106, 20, 232, 51, 13, 3, 32, 0, 14, 4, 165, 223, 178, 206, 37, 233, 94, 84, 191, 149, 253, 57, 235, 93, 206, 252, 178, 94, 114, 0, 21, 0, 173, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
         strip_sni(&packet);
 
     }
