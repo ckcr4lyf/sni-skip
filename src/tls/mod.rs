@@ -2,6 +2,8 @@ use etherparse::SlicedPacket;
 use log::{info, debug, error, trace};
 use pnet::packet::{Packet, MutablePacket};
 
+mod client_hello;
+
 pub fn strip_sni(packet: &[u8]) -> Option<Vec<u8>> {
     trace!("Original packet {:?}", packet);
 
