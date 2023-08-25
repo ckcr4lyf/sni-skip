@@ -1,5 +1,20 @@
 use log::{trace, debug};
 
+pub struct ClientHello<'a> {
+    pub payload: &'a mut [u8]
+}
+
+impl <'a> ClientHello<'a> {
+    pub fn new(payload: &'a mut [u8]) -> Self {
+        Self { payload: payload }
+    }
+
+    pub fn update_length(&mut self, len: u16) {
+        self.payload[3..5].copy_from_slice(&len.to_be_bytes());
+        self.payload[7..9].copy_from_slice(&(len-4).to_be_bytes());
+    }
+}
+
 // TODO: We will improve the `()` into actual structured data
 pub fn parse_client_hello(tcp_payload: &[u8]) -> Option<()> {
 
