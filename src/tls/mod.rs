@@ -2,6 +2,8 @@ use etherparse::SlicedPacket;
 use log::{info, debug, error, trace};
 use pnet::packet::{Packet, MutablePacket};
 
+use crate::tls::client_hello::parse_client_hello;
+
 mod client_hello;
 
 pub fn strip_sni(packet: &[u8]) -> Option<Vec<u8>> {
@@ -40,10 +42,19 @@ pub fn strip_sni(packet: &[u8]) -> Option<Vec<u8>> {
 
     // Only needs TCP header and TCP payload
     let mut new_tcp_data: Vec<u8> = Vec::with_capacity(tcp_header_len + payload_len);
-    
+        
     // Copy the TCP header into it
     new_tcp_data.extend_from_slice(&packet[20..20+tcp_header_len]);
     
+
+    let mut binding = ethernet_packet.payload.to_owned();
+    let mut ch = match parse_client_hello(&mut binding) {
+        Some(ch) => ch,
+        None => return None,
+    };
+
+    let mut new_tls_data: Vec<u8> = Vec::with_capacity(payload_len);
+
     // Fantastic reference: https://tls12.xargs.org/#client-hello
     // 5 + 4 + 2 + 32 + 1 = 43 bytes of data we can always skip.
     let mut pos = 43;
@@ -67,7 +78,7 @@ pub fn strip_sni(packet: &[u8]) -> Option<Vec<u8>> {
     pos += cd_length as usize;
 
     // Up until here, we need to copy EVERYTHING
-    new_tcp_data.extend_from_slice(&ethernet_packet.payload[0..pos]);
+    new_tls_data.extend_from_slice(&ethernet_packet.payload[0..pos]);
 
     // next two bytes are length of extensions
     let extension_length = u16::from_be_bytes(ethernet_packet.payload.get(pos .. pos + 2)?.try_into().expect("Fucked up"));
@@ -117,16 +128,23 @@ pub fn strip_sni(packet: &[u8]) -> Option<Vec<u8>> {
     // New extension length
     let new_extension_length = extension_length - skipped_bytes;
     debug!("New extension length is {}", new_extension_length);
-    new_tcp_data.extend_from_slice(&u16::to_be_bytes(new_extension_length));
-    new_tcp_data.extend_from_slice(&extension_data);
+    new_tls_data.extend_from_slice(&u16::to_be_bytes(new_extension_length));
+    new_tls_data.extend_from_slice(&extension_data);
 
     debug!("Old TCP Payload len is {}", ethernet_packet.payload.len());
-    debug!("New TCP Payload len is {}", new_tcp_data.len() - tcp_header_len);
+    debug!("New TCP Payload len is {}", new_tls_data.len());
 
     trace!("OLD packet is {:02x?}", ethernet_packet.payload);
-    trace!("NEW packet is {:02x?}", new_tcp_data);
+    trace!("NEW packet is {:02x?}", new_tls_data);
 
-    match pnet::packet::ipv4::MutableIpv4Packet::new(&mut Vec::from(packet)) {
+    ch.payload = &mut new_tls_data;
+    ch.update_length(ch.payload.len() as u16);
+    debug!("New CH is {:02X?}", ch.payload);
+    debug!("New CH len is {}", ch.payload.len());
+    new_tcp_data.extend_from_slice(ch.payload);
+
+
+    match pnet::packet::ipv4::MutableIpv4Packet::new(&mut Vec::from(&packet[0..packet.len()-skipped_bytes as usize])) {
         Some(mut p) => {
             debug!("Old IPv4 packet is {:?}", p);
             debug!("old checksum 0x{:04X?}", p.get_checksum());
@@ -137,6 +155,7 @@ pub fn strip_sni(packet: &[u8]) -> Option<Vec<u8>> {
             // We need to make a TCP packet, and update the checksum and length
             let mut ntcp = pnet::packet::tcp::MutableTcpPacket::new(&mut new_tcp_data).unwrap();
             debug!("Old TCP packet is {:?}", ntcp);
+            // ntcp.set_payload(ch.payload);
             ntcp.set_checksum(pnet::packet::tcp::ipv4_checksum(&ntcp.to_immutable(), &p.get_source(), &p.get_destination()));
             debug!("New TCP packet is {:?}", ntcp);
             

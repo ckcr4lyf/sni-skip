@@ -18,9 +18,10 @@ const hack_packet: [u8; 569] = [69, 0, 2, 57, 7, 4, 64, 0, 64, 6, 233, 174, 192,
 fn queue_callback(msg: &nfqueue::Message, state: &mut State) {
     match strip_sni(msg.get_payload()) {
         Some(np) => {
-            info!("Stripped sni, will send new packet :hapbruh:");
+            info!("Stripped sni, will send new packet :hapbruh: (Original Len: {}, New Len: {})", msg.get_payload().len(), np.len());
             // msg.set_verdict_full(nfqueue::Verdict::Accept, msg.get_id(), &np);
             // TODO: Fix to only make an IP packet, not whole ethernet packet.
+            info!("New packet is {:02X?}", np);
             msg.set_verdict_full(nfqueue::Verdict::Accept, msg.get_nfmark(), &np);
         },
         None => {

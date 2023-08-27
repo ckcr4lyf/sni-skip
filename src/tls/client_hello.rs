@@ -18,6 +18,11 @@ impl <'a> ClientHello<'a> {
 // TODO: We will improve the `()` into actual structured data
 pub fn parse_client_hello(tcp_payload: &mut [u8]) -> Option<ClientHello> {
 
+    if tcp_payload.len() < 10 {
+        trace!("Len < 10, most likely not a Handshake");
+        return None;
+    }
+    
     // Make sure it is a handshake message
     if tcp_payload[0] != 0x16 {
         trace!("First byte is not 0x16, not a Handshake");
