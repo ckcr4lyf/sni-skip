@@ -5,6 +5,7 @@ use pnet::packet::{Packet, MutablePacket};
 use crate::tls::client_hello::parse_client_hello;
 
 mod client_hello;
+pub mod tcp;
 
 pub fn strip_sni(packet: &[u8]) -> Option<Vec<u8>> {
     trace!("Original packet {:?}", packet);
