@@ -1,7 +1,9 @@
-use log::trace;
+use log::{trace, debug};
 use pnet::packet::{ipv4::{MutableIpv4Packet, checksum}, tcp::MutableTcpPacket, tcp::ipv4_checksum, Packet};
 
-const NEW_PAYLOAD: [u8; 10] = [42, 42, 42, 42, 42, 42, 42, 42, 42, 42];
+use crate::tls::strip_sni_v2;
+
+// const NEW_PAYLOAD: [u8; 10] = [42, 42, 42, 42, 42, 42, 42, 42, 42, 42];
 
 pub fn placeholder(packet: &[u8]) -> Option<Vec<u8>> {
     trace!("Recevied packet: {:02X?}", packet);
@@ -9,8 +11,8 @@ pub fn placeholder(packet: &[u8]) -> Option<Vec<u8>> {
     let mut original_packet = Vec::from(packet);
     let ipv4_packet = MutableIpv4Packet::new(&mut original_packet).expect("Fail to make IPv4 packet");
 
-    // 20 bytes is IPv4 Header, remianing is TCP payload
-    let original_tcp_payload = Vec::from(&packet[20..]);
+    // 20 bytes is IPv4 Header, remianing is TCP header+payload
+    let original_tcp_data = Vec::from(&packet[20..]);
     // let tcp_packet = MutableTcpPacket::new(&mut original_tcp_payload).expect("Fail to make TCP packet");
 
     // Technically only the first four bits contain the len, but they do so
@@ -20,28 +22,34 @@ pub fn placeholder(packet: &[u8]) -> Option<Vec<u8>> {
     trace!("Calculate TCP header len as {}", tcp_header_len);
 
     if packet.len() < 20 + tcp_header_len {
-        trace!("Packet too small (NO PAYLOAD), skipping");
+        debug!("Packet too small (NO PAYLOAD), skipping");
         return None;
     }
 
     let tcp_payload_len = packet.len() - (20 + tcp_header_len);
     
     if tcp_payload_len < 10 {
-        trace!("Packet too small, skipping");
+        debug!("Packet too small, skipping");
         return None;
     }
 
-    trace!("TCP Header len is {}, TCP Payload len is {}", tcp_header_len, tcp_payload_len);
+    debug!("TCP Header len is {}, TCP Payload len is {}", tcp_header_len, tcp_payload_len);
 
     // Manually convert paylod to "BBBBBBBBBB" (10 Bs)
     // trace!("Original TCP Packet: {:?}", tcp_packet);
-    trace!("Original TCP Payload: {:02X?}", original_tcp_payload);
+    trace!("Original TCP Data: {:02X?}", original_tcp_data);
+
+    // Get the new payload - SNI stripped!
+    let new_payload = match strip_sni_v2(&original_tcp_data[tcp_header_len..]) {
+        Some(np) => np,
+        None => return None,
+    };
 
     // New TCP packet buffer (we cannot modify the existing one)
     // Copy the header into it and then the new payload
-    let mut new_tcp_packet_buffer: Vec<u8> = Vec::with_capacity(tcp_header_len as usize + NEW_PAYLOAD.len());
+    let mut new_tcp_packet_buffer: Vec<u8> = Vec::with_capacity(tcp_header_len as usize + new_payload.len());
     new_tcp_packet_buffer.extend_from_slice(&packet[20..20+tcp_header_len]);
-    new_tcp_packet_buffer.extend_from_slice(&NEW_PAYLOAD);
+    new_tcp_packet_buffer.extend_from_slice(&new_payload);
 
     // We need to recompute the checksum on this guy.
     let mut new_tcp_packet = MutableTcpPacket::new(&mut new_tcp_packet_buffer).expect("Fail to make TCP packet");
@@ -55,7 +63,7 @@ pub fn placeholder(packet: &[u8]) -> Option<Vec<u8>> {
 
     // New IPv4 packet buffer (we cannot modify existing one)
     // Copy the IPv4 header into it and the payload (which is a TCP packet)
-    let mut new_ipv4_packet_buffer: Vec<u8> = Vec::with_capacity(20 + tcp_header_len as usize + NEW_PAYLOAD.len());
+    let mut new_ipv4_packet_buffer: Vec<u8> = Vec::with_capacity(20 + tcp_header_len as usize + new_payload.len());
     new_ipv4_packet_buffer.extend_from_slice(&packet[0..20]);
     new_ipv4_packet_buffer.extend_from_slice(&new_tcp_packet.packet());
 

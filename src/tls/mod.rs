@@ -172,6 +172,112 @@ pub fn strip_sni(packet: &[u8]) -> Option<Vec<u8>> {
     }
 }
 
+pub fn strip_sni_v2(tcp_payload: &[u8]) -> Option<Vec<u8>> {
+
+    // Lets first see if the tcp_payload really is a ClientHello...
+    let mut owned_payload = tcp_payload.to_owned();
+    let mut client_hello = match parse_client_hello(&mut owned_payload) {
+        Some(ch) => ch,
+        None => return None,
+    };
+
+    let mut new_tls_data: Vec<u8> = Vec::with_capacity(tcp_payload.len());
+
+    // Fantastic reference: https://tls12.xargs.org/#client-hello
+    // 5 + 4 + 2 + 32 + 1 = 43 bytes of data we can always skip.
+    let mut pos = 43;
+
+    // next byte is length of existing session (if any)
+    let session_length = u8::from_be_bytes(tcp_payload.get(pos .. pos + 1)?.try_into().expect("Fucked up"));
+    pos += 1;
+    // println!("session length is {:?}, data is {:x?}", session_length, &ethernet_packet.payload[pos .. pos + session_length as usize]);
+    pos += session_length as usize;
+
+    // next two bytes give use length of Cipher Suite data
+    let cs_length = u16::from_be_bytes(tcp_payload.get(pos .. pos + 2)?.try_into().expect("Fucked up"));
+    pos += 2;
+    // println!("Cipher Suite length is {:?}, data is {:x?}", cs_length, &ethernet_packet.payload[pos .. pos + cs_length as usize]);
+    pos += cs_length as usize;
+
+    // next byte is length of compression data
+    let cd_length = u8::from_be_bytes(tcp_payload.get(pos .. pos + 1)?.try_into().expect("Fucked up"));
+    pos += 1;
+    // println!("compression data length is {:?}, data is {:x?}", cd_length, &ethernet_packet.payload[pos .. pos + cd_length as usize]);
+    pos += cd_length as usize;
+
+    // Up until here, we need to copy EVERYTHING
+    new_tls_data.extend_from_slice(&tcp_payload[0..pos]);
+
+    // next two bytes are length of extensions
+    let extension_length = u16::from_be_bytes(tcp_payload.get(pos .. pos + 2)?.try_into().expect("Fucked up"));
+    pos += 2;
+    // println!("extension length is {:?}, data is {:x?}", extension_length, &ethernet_packet.payload[pos .. pos + extension_length as usize]);
+    // println!("extension length is {:?}", extension_length);
+    debug!("Extensions length is {}", extension_length);
+
+    let mut extension_data: Vec<u8> = Vec::with_capacity(extension_length as usize);
+
+    // loop over extensions
+    // read ext_type(u16) and ext_len(u16)
+    // if ext_type==0x00 (SNI), skip it, and add (4 + value of ext_len) to skipped_bytes
+    // we won't copy these bytes into final packet
+    // essentially we strip it from the packet
+    // 
+    // return resulting packet without SNI data
+    
+    let mut ext_pos: usize = 0;
+    let mut skipped_bytes = 0;
+
+    while ext_pos < extension_length as usize {
+        let ext_type = u16::from_be_bytes(tcp_payload.get(pos + ext_pos .. pos + ext_pos + 2)?.try_into().expect("Fucked up"));
+        ext_pos += 2;
+        let ext_length = u16::from_be_bytes(tcp_payload.get(pos + ext_pos .. pos + ext_pos + 2)?.try_into().expect("Fucked up"));
+        ext_pos += 2;
+        trace!("Found extension, type=0x{:04X?} & length=0x{:04X?}", ext_type, ext_length);
+
+        if ext_type != 0x00 {
+            trace!("Non SNI extension, we will add this guy...");
+            extension_data.extend_from_slice(&u16::to_be_bytes(ext_type));
+            extension_data.extend_from_slice(&u16::to_be_bytes(ext_length));
+            extension_data.extend_from_slice(&tcp_payload[pos + ext_pos .. pos + ext_pos + ext_length as usize]);
+        } else {
+            debug!("Found SNI extension! We should skip the next 0x{:04X?} bytes!", ext_length);
+            // We would want to skip the next ext_length bytes
+            // But also, not copy the 4 bytes of extension type , extension length
+            skipped_bytes += 4 + ext_length;
+        }
+
+        ext_pos += ext_length as usize;
+    }
+
+    debug!("Current pos+ext_pos is {}", pos + ext_pos);
+    debug!("We are gonna cut {} bytes.", skipped_bytes);
+
+    // New extension length
+    let new_extension_length = extension_length - skipped_bytes;
+    debug!("New extension length is {}", new_extension_length);
+    new_tls_data.extend_from_slice(&u16::to_be_bytes(new_extension_length));
+    new_tls_data.extend_from_slice(&extension_data);
+
+    debug!("Old TCP Payload len is {}", tcp_payload.len());
+    debug!("New TCP Payload len is {}", new_tls_data.len());
+
+    trace!("OLD packet is {:02x?}", tcp_payload);
+    trace!("NEW packet is {:02x?}", new_tls_data);
+
+    client_hello.payload = &mut new_tls_data;
+    // The actual TCP payload length - 5
+    // i.e. TLS Content-Type (2 bytes), Version (2 bytes) and Length (1 byte)
+    let tls_record_len = client_hello.payload.len() as u16 - 5;
+    debug!("Will update the TLS record length to {}", tls_record_len);
+    client_hello.update_length(tls_record_len);
+    debug!("New CH is {:02X?}", client_hello.payload);
+    debug!("New CH len is {}", client_hello.payload.len());
+    // new_tcp_data.extend_from_slice(client_hello.payload);
+
+    return Some(client_hello.payload.to_vec());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
