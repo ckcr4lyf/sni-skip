@@ -259,6 +259,9 @@ pub fn strip_sni_v2(tcp_payload: &[u8]) -> Option<Vec<u8>> {
     new_tls_data.extend_from_slice(&u16::to_be_bytes(new_extension_length));
     new_tls_data.extend_from_slice(&extension_data);
 
+    // We will try and copy skippped_bytes zeros into the vec
+    // new_tls_data.extend_from_slice(&vec![0u8; skipped_bytes as usize]);
+
     debug!("Old TCP Payload len is {}", tcp_payload.len());
     debug!("New TCP Payload len is {}", new_tls_data.len());
 
@@ -275,7 +278,11 @@ pub fn strip_sni_v2(tcp_payload: &[u8]) -> Option<Vec<u8>> {
     debug!("New CH len is {}", client_hello.payload.len());
     // new_tcp_data.extend_from_slice(client_hello.payload);
 
-    return Some(client_hello.payload.to_vec());
+    // client_hello.payload.ex
+    let mut fp = client_hello.payload.to_vec();
+    fp.extend_from_slice(&vec![0u8; skipped_bytes as usize]);
+
+    return Some(fp);
 }
 
 #[cfg(test)]
