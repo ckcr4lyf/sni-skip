@@ -254,9 +254,20 @@ pub fn strip_sni_v2(tcp_payload: &[u8]) -> Option<Vec<u8>> {
     debug!("We are gonna cut {} bytes.", skipped_bytes);
 
     // New extension length
-    let new_extension_length = extension_length - skipped_bytes;
-    debug!("New extension length is {}", new_extension_length);
-    new_tls_data.extend_from_slice(&u16::to_be_bytes(new_extension_length));
+    // let new_extension_length = extension_length - skipped_bytes;
+    // debug!("New extension length is {}", new_extension_length);
+
+    // We skipped `skipped_bytes` from the SNI. So we will add a padding extension
+    // We will need to have a zero buffer of `skipped_bytes - 4` for this
+    let zero_len = skipped_bytes - 4;
+    let mut padding_data: Vec<u8> = Vec::with_capacity(skipped_bytes as usize);
+    padding_data.extend_from_slice(&[0x00, 0x15]);
+    padding_data.extend_from_slice(&zero_len.to_be_bytes());
+    padding_data.extend_from_slice(&vec![0; zero_len as usize]);
+    debug!("Generated padding extension: {:02X?}", padding_data);
+    extension_data.extend_from_slice(&padding_data);
+
+    new_tls_data.extend_from_slice(&u16::to_be_bytes(extension_length));
     new_tls_data.extend_from_slice(&extension_data);
 
     debug!("Old TCP Payload len is {}", tcp_payload.len());
